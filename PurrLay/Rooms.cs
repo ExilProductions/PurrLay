@@ -13,48 +13,94 @@ public static class Lobby
 {
     static readonly Dictionary<string, Room> _room = new();
     static readonly Dictionary<ulong, string> _roomIdToName = new();
+    static readonly object _roomsLock = new();
     
     static ulong _roomIdCounter;
     
     public static async Task<string> CreateRoom(string region, string name)
     {
-        if (_room.ContainsKey(name))
-            throw new Exception("Room already exists");
+        lock (_roomsLock)
+        {
+            if (_room.ContainsKey(name))
+                throw new Exception("Room already exists");
+        }
         
         var hostSecret = Guid.NewGuid().ToString().Replace("-", "");
 
         await HTTPRestAPI.RegisterRoom(region, name);
         
-        _roomIdToName.Add(_roomIdCounter, name);
-        _room.Add(name, new Room
+        lock (_roomsLock)
         {
-            name = name,
-            hostSecret = hostSecret,
-            clientSecret = Guid.NewGuid().ToString().Replace("-", ""),
-            createdAt = DateTime.UtcNow,
-            roomId = _roomIdCounter++
-        });
+            _roomIdToName.Add(_roomIdCounter, name);
+            _room.Add(name, new Room
+            {
+                name = name,
+                hostSecret = hostSecret,
+                clientSecret = Guid.NewGuid().ToString().Replace("-", ""),
+                createdAt = DateTime.UtcNow,
+                roomId = _roomIdCounter++
+            });
+        }
         
         return hostSecret;
     }
 
     public static bool TryGetRoom(string name, out Room? room)
     {
-        return _room.TryGetValue(name, out room);
+        lock (_roomsLock)
+        {
+            return _room.TryGetValue(name, out room);
+        }
     }
     
     public static bool TryGetRoom(ulong roomId, out Room? room)
     {
+        lock (_roomsLock)
+        {
+            if (_roomIdToName.TryGetValue(roomId, out var name) && _room.TryGetValue(name, out var r))
+            {
+                room = r;
+                return true;
+            }
+        }
+
         room = null;
-        return _roomIdToName.TryGetValue(roomId, out var name) && _room.TryGetValue(name, out room);
+        return false;
     }
 
     public static void RemoveRoom(ulong roomId)
     {
-        if (_roomIdToName.Remove(roomId, out var name))
+        string? name;
+        lock (_roomsLock)
         {
+            if (!_roomIdToName.Remove(roomId, out name))
+                return;
             _room.Remove(name);
-            _ = HTTPRestAPI.UnregisterRoom(name);
+        }
+        _ = UnregisterWithRetry(name!);
+    }
+
+    static async Task UnregisterWithRetry(string name, int maxAttempts = 3)
+    {
+        int attempt = 0;
+        while (true)
+        {
+            try
+            {
+                await HTTPRestAPI.UnregisterRoom(name);
+                return;
+            }
+            catch (Exception e)
+            {
+                attempt++;
+                Console.Error.WriteLine($"UnregisterRoom attempt {attempt} failed for '{name}': {e.Message}");
+                if (attempt >= maxAttempts)
+                {
+                    Console.Error.WriteLine($"UnregisterRoom giving up for '{name}' after {attempt} attempts.");
+                    return;
+                }
+                await Task.Delay(TimeSpan.FromSeconds(Math.Min(5, attempt))); // simple backoff
+            }
         }
     }
 }
