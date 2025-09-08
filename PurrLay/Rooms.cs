@@ -54,7 +54,7 @@ public static class Lobby
         if (_roomIdToName.Remove(roomId, out var name))
         {
             _room.Remove(name);
-            _ = HTTPRestAPI.unegisterRoom(name);
+            _ = HTTPRestAPI.UnregisterRoom(name);
         }
     }
 }
